@@ -1209,6 +1209,7 @@ def test_object_set_get_metadata_empty_to_unreadable_suffix():
 @attr(method='put')
 @attr(operation='metadata write')
 @attr(assertion='non-priting in-fixes noted and preserved')
+@attr('fails_strict_rfc2616')
 def test_object_set_get_metadata_empty_to_unreadable_infix():
     metadata = 'h\x04w'
     got = _set_get_metadata_unreadable(metadata)
@@ -1247,6 +1248,7 @@ def test_object_set_get_metadata_overwrite_to_unreadable_suffix():
 @attr(method='put')
 @attr(operation='metadata re-write')
 @attr(assertion='non-priting in-fixes noted and preserved')
+@attr('fails_strict_rfc2616')
 def test_object_set_get_metadata_overwrite_to_unreadable_infix():
     metadata = 'h\x04w'
     got = _set_get_metadata_unreadable(metadata)
@@ -4705,6 +4707,12 @@ def test_bucket_create_special_key_names():
     names = [e.name for e in list(li)]
     eq(names, key_names)
 
+    for name in key_names:
+        key = bucket.get_key(name)
+        eq(key.name, name)
+        content = key.get_contents_as_string()
+        eq(content, name)
+
 @attr(resource='bucket')
 @attr(method='get')
 @attr(operation='create and list objects with underscore as prefix, list using prefix')
@@ -4910,6 +4918,50 @@ def test_object_copy_key_not_found():
     eq(e.reason, 'Not Found')
     eq(e.error_code, 'NoSuchKey')
 
+@attr(resource='object')
+@attr(method='put')
+@attr(operation='copy object to/from versioned bucket')
+@attr(assertion='works')
+def test_object_copy_versioned_bucket():
+    bucket = get_new_bucket()
+    check_configure_versioning_retry(bucket, True, "Enabled")
+
+    key = bucket.new_key('foo123bar')
+    _create_key_with_random_content(key.name, 1*1024*1024)
+
+    # copy object in the same bucket
+    key2 = bucket.copy_key('bar321foo', bucket.name, key.name, src_version_id = key.version_id)
+    res = _make_request('GET', bucket, key2)
+    eq(res.status, 200)
+    eq(res.reason, 'OK')
+
+    # second copy
+    key3 = bucket.copy_key('bar321foo2', bucket.name, key2.name, src_version_id = key2.version_id)
+    res = _make_request('GET', bucket, key3)
+    eq(res.status, 200)
+    eq(res.reason, 'OK')
+
+    # copy to another versioned bucket
+    bucket2 = get_new_bucket()
+    check_configure_versioning_retry(bucket2, True, "Enabled")
+    key4 = bucket2.copy_key('bar321foo3', bucket.name, key.name, src_version_id = key.version_id)
+    res = _make_request('GET', bucket, key4)
+    eq(res.status, 200)
+    eq(res.reason, 'OK')
+
+    # copy to another non versioned bucket
+    bucket3 = get_new_bucket()
+    key5 = bucket3.copy_key('bar321foo4', bucket.name, key.name , src_version_id = key.version_id)
+    res = _make_request('GET', bucket, key5)
+    eq(res.status, 200)
+    eq(res.reason, 'OK')
+
+    # copy from a non versioned bucket
+    key6 = bucket.copy_key('foo123bar2', bucket3.name, key5.name)
+    res = _make_request('GET', bucket, key6)
+    eq(res.status, 200)
+    eq(res.reason, 'OK')
+
 def transfer_part(bucket, mp_id, mp_keyname, i, part, headers=None):
     """Transfer a part of a multipart upload. Designed to be run in parallel.
     """
@@ -4918,7 +4970,7 @@ def transfer_part(bucket, mp_id, mp_keyname, i, part, headers=None):
     mp.id = mp_id
     part_out = StringIO(part)
     mp.upload_part_from_file(part_out, i+1, headers=headers)
-
+ 
 def copy_part(src_bucket, src_keyname, dst_bucket, dst_keyname, mp_id, i, start=None, end=None):
     """Copy a part of a multipart upload from other bucket.
     """
@@ -6028,6 +6080,22 @@ def test_ranged_request_invalid_range():
     eq(e.status, 416)
     eq(e.error_code, 'InvalidRange')
 
+@attr(resource='object')
+@attr(method='get')
+@attr(operation='range')
+@attr(assertion='returns invalid range, 416')
+def test_ranged_request_empty_object():
+    content = ''
+
+    bucket = get_new_bucket()
+    key = bucket.new_key('testobj')
+    key.set_contents_from_string(content)
+
+    # test invalid range
+    e = assert_raises(boto.exception.S3ResponseError, key.open, 'r', headers={'Range': 'bytes=40-50'})
+    eq(e.status, 416)
+    eq(e.error_code, 'InvalidRange')
+    
 def check_can_test_multiregion():
     if not targets.main.master or len(targets.main.secondaries) == 0:
         raise SkipTest
